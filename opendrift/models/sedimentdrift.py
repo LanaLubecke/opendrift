@@ -32,7 +32,19 @@ class SedimentElement(Lagrangian3DArray):
                      'default': 0}),
         ('terminal_velocity', {'dtype': np.float32,
                                'units': 'm/s',
-                               'default': -0.001})  # 1 mm/s negative buoyancy
+                               'default': -0.001}),  # 1 mm/s negative buoyancy
+        ('rho_s', {'dtype': np.float32,
+                   'units': 'kg/m^3',
+                   'default': 2650}),
+        ('phi', {'dtype': np.float32,
+                 'units': 'TODO',
+                 'default': 7.8}),
+        ('E_0', {'dtype': np.float32,
+                 'units': 'TODO',
+                 'default': 0.05}),
+        ('tau_crit', {'dtype': np.float32,
+                      'units': 'Pa',
+                      'default': 0.09})
         ])
 
 
