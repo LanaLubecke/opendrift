@@ -44,7 +44,10 @@ class SedimentElement(Lagrangian3DArray):
                  'default': 0.05}),
         ('tau_crit', {'dtype': np.float32,
                       'units': 'Pa',
-                      'default': 0.09})
+                      'default': 0.09}),
+        ('counter', {'dtype': np.uint8,
+                      'units': '1',
+                      'default': 0})
         ])
 
 
@@ -66,7 +69,8 @@ class SedimentDrift(OceanDrift):
         'sea_surface_wave_period_at_variance_spectral_density_maximum': {'fallback': 0},
         'sea_surface_wave_mean_period_from_variance_spectral_density_second_frequency_moment': {'fallback': 0},
         'land_binary_mask': {'fallback': None},
-        'ocean_vertical_diffusivity': {'fallback': 0.02},
+        'ocean_vertical_diffusivity': {'fallback': 0.02,
+                                      'profiles': True},
         'ocean_mixed_layer_thickness': {'fallback': 50},
         'sea_floor_depth_below_sea_level': {'fallback': 10000},
         }
@@ -95,6 +99,8 @@ class SedimentDrift(OceanDrift):
 
         # Vertical mixing is enabled as default
         self._set_config_default('drift:vertical_mixing', True)
+        # print(self.required_variables['x_sea_water_velocity'])
+        # print(self.environment.x_sea_water_velocity)
 
     def update(self):
         """Update positions and properties of sediment particles.
@@ -114,7 +120,13 @@ class SedimentDrift(OceanDrift):
 
         self.vertical_mixing()  # Including buoyancy and settling
 
-        self.resuspension()
+        # self.vertical_buoyancy()
+
+        upwards_moving_particles = self.elements.counter == 1
+        self.elements.terminal_velocity[upwards_moving_particles] = -0.001
+        self.elements.counter[upwards_moving_particles] = 0
+
+        self.resuspension()        
 
     def bottom_interaction(self, seafloor_depth):
         """Sub method of vertical_mixing, determines settling"""
@@ -134,4 +146,6 @@ class SedimentDrift(OceanDrift):
             # Allow moving again
             self.elements.moving[resuspending] = 1
             # Suspend 1 cm above seafloor
-            self.elements.z[resuspending] = self.elements.z[resuspending] + .01
+            self.elements.terminal_velocity[resuspending] = 0.01
+            self.elements.counter[resuspending] = 1
+            

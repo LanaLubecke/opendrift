@@ -177,7 +177,7 @@ class OceanDrift(OpenDriftSimulation):
 
     def update(self):
         """Update positions and properties of elements."""
-
+        
         # Simply move particles with ambient current
         self.advect_ocean_current()
 

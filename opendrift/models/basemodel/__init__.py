@@ -4455,12 +4455,14 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
             x_vel and v_vel: floats, velocities in m/s of particle along
                              x- and y-axes of the inherit SRS (proj4).
         """
-
+        
         geod = pyproj.Geod(ellps='WGS84')
 
         azimuth = np.degrees(np.arctan2(x_vel, y_vel))  # Direction of motion
         velocity = np.sqrt(x_vel**2 + y_vel**2)  # Velocity in m/s
         velocity = velocity * self.elements.moving  # Do not move frosen elements
+
+        old_lat = self.elements.lon
 
         # Calculate new positions
         self.elements.lon, self.elements.lat, back_az = geod.fwd(
