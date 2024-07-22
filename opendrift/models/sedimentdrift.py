@@ -33,18 +33,9 @@ class SedimentElement(Lagrangian3DArray):
         ('terminal_velocity', {'dtype': np.float32,
                                'units': 'm/s',
                                'default': -0.001}),  # 1 mm/s negative buoyancy
-        ('rho_s', {'dtype': np.float32,
-                   'units': 'kg/m^3',
-                   'default': 2650}),
         ('phi', {'dtype': np.float32,
                  'units': 'TODO',
                  'default': 7.8}),
-        ('E_0', {'dtype': np.float32,
-                 'units': 'TODO',
-                 'default': 0.05}),
-        ('tau_crit', {'dtype': np.float32,
-                      'units': 'Pa',
-                      'default': 0.09}),
         ('counter', {'dtype': np.uint8,
                       'units': '1',
                       'default': 0})
@@ -90,6 +81,54 @@ class SedimentDrift(OceanDrift):
                 'units': 'm/s',
                 'description':
                 'Sedimented particles will be resuspended if bottom current shear exceeds this value.',
+                'level': CONFIG_LEVEL_ESSENTIAL
+            }})
+
+        self._add_config({
+            'vertical_mixing:E_0': {
+                'type': 'float',
+                'default': 1e-5,
+                'min': 1e-6,
+                'max': 1e-4,
+                'units': 'kg*m^-3',
+                'description':
+                'Empiracal erodability of sediment.',
+                'level': CONFIG_LEVEL_ESSENTIAL
+            }})
+
+        self._add_config({
+            'vertical_mixing:tau_crit': {
+                'type': 'float',
+                'default': 0.2,
+                'min': 0,
+                'max': 1,
+                'units': 'Pa',
+                'description':
+                'Critical level of stress to resuspend element.',
+                'level': CONFIG_LEVEL_ESSENTIAL
+            }})
+
+        self._add_config({
+            'vertical_mixing:rho_s': {
+                'type': 'float',
+                'default': 2000,
+                'min': 1550,
+                'max': 2650,
+                'units': 'kgm-3',
+                'description':
+                'Bed sediment particle density.',
+                'level': CONFIG_LEVEL_ESSENTIAL
+            }})
+
+        self._add_config({
+            'vertical_mixing:porosity': {
+                'type': 'float',
+                'default': 0.9,
+                'min': 0,
+                'max': 1,
+                'units': 'unitless',
+                'description':
+                'Porosity of sediment.',
                 'level': CONFIG_LEVEL_ESSENTIAL
             }})
 
@@ -142,10 +181,35 @@ class SedimentDrift(OceanDrift):
         """Resuspending elements if current speed > .5 m/s"""
         threshold = self.get_config('vertical_mixing:resuspension_threshold')
         resuspending = np.logical_and(self.current_speed() > threshold, self.elements.moving==0)
+
+        # threshold = self.get_config('vertical_mixing:tau_crit')
+        # bottom_stress = self.calc_bottom_stress
+        # resuspending = np.logical_and(bottom_stress > threshold, self.elements.moving==0)
+        
         if np.sum(resuspending) > 0:
             # Allow moving again
             self.elements.moving[resuspending] = 1
             # Suspend 1 cm above seafloor
             self.elements.terminal_velocity[resuspending] = 0.01
+            # self.elements.terminal_velocity[resuspending] = self.calc_upward_resuspension_velocity(bottom_stress)
             self.elements.counter[resuspending] = 1
+
+    def calc_bottom_stress(self):
+        # return bottom_stress
+        # return 0.0021
+        pass
+
+    def calc_upward_resuspension_velocity(self, bottom_stress):
+        # E_0 = self.get_config('vertical_mixing:E_0')
+        # porosity = self.get_config('vertical_mixing:porosity')
+        # rho_s = self.get_config('vertical_mixing:rho_s')
+        # tau_crit = self.get_config('vertical_mixing:tau_crit')
+        
+        # w = ((E_0 * (1-porosity))/rho_s) * ((bottom_stress - tau_crit)/(bottom_stress))
+        # return w
+        pass
+
+
+        
+        
             
