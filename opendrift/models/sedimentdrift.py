@@ -151,17 +151,24 @@ class SedimentDrift(OceanDrift):
         # resuspending = np.logical_and(self.current_speed() > threshold, self.elements.moving==0)
 
         threshold = self.elements.tau_crit
+        # Technically this calculation of bottom stress should only be done on particles near
+        # the seafloor. So this calculation is not valid for the particles that have not settled.
+        # I am leaving it this way though because it works better for finding the resuspending
+        # index.
+        
         bottom_stress = self.calc_bottom_stress()
-        print(np.max(bottom_stress))
         resuspending = np.logical_and(bottom_stress > threshold, self.elements.moving==0)
+        if np.sum(self.elements.moving==0) > 0:
+            print(f"max bottom stress of particles on bottom: {np.max(bottom_stress[self.elements.moving==0])}")
         
         if np.sum(resuspending) > 0:
+            print("There are particles to resuspend")
             # Allow moving again
             self.elements.moving[resuspending] = 1
             self.elements.dz_bot[resuspending] = 99999.0
             # Suspend 1 cm above seafloor
             # self.elements.terminal_velocity[resuspending] = 0.01
-            self.elements.terminal_velocity[resuspending] = self.calc_upward_resuspension_velocity(bottom_stress)
+            self.elements.terminal_velocity[resuspending] = self.calc_upward_resuspension_velocity(bottom_stress[resuspending])
             self.elements.counter[resuspending] = 1
 
     def calc_bottom_stress(self):
@@ -191,9 +198,10 @@ class SedimentDrift(OceanDrift):
         c_d = 0.0021
 
         _2KE = u_vel**2 + v_vel**2
-        print(f"shape 2KE: {np.shape(_2KE)}")
 
-        bottom_stress = (2*A_v/dz_bot + r_b + c_d*np.sqrt(_2KE))*u_vel
+        bottom_stress_pseudo_energy = (2*A_v/dz_bot + r_b + c_d*np.sqrt(_2KE))*u_vel
+        bottom_stress = self.sea_water_density()*bottom_stress_pseudo_energy
+        
         return bottom_stress     
 
     def find_nearest(self, array, value):
