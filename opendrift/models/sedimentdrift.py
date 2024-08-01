@@ -33,12 +33,27 @@ class SedimentElement(Lagrangian3DArray):
         ('terminal_velocity', {'dtype': np.float32,
                                'units': 'm/s',
                                'default': -0.001}),  # 1 mm/s negative buoyancy
-        ('phi', {'dtype': np.float32,
-                 'units': 'TODO',
-                 'default': 7.8}),
+        ('grain_diameter', {'dtype': np.float32,
+                 'units': 'm',
+                 'default': 4e-6}),
         ('counter', {'dtype': np.uint8,
                       'units': '1',
-                      'default': 0})
+                      'default': 0}),
+        ('dz_bot', {'dtype': np.float32,
+                      'units': 'm',
+                      'default': 99999.0}), 
+        ('E_0', {'dtype': np.float32,
+                      'units': 'kg*m^-3',
+                      'default': 1e-5}),
+        ('tau_crit', {'dtype': np.float32,
+                      'units': 'Pa',
+                      'default': 0.09}),
+        ('rho_s', {'dtype': np.float32,
+                      'units': 'kgm-3',
+                      'default': 2000}),
+        ('porosity', {'dtype': np.float32,
+                      'units': 'unitless',
+                      'default': 0.9})
         ])
 
 
@@ -84,53 +99,6 @@ class SedimentDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ESSENTIAL
             }})
 
-        self._add_config({
-            'vertical_mixing:E_0': {
-                'type': 'float',
-                'default': 1e-5,
-                'min': 1e-6,
-                'max': 1e-4,
-                'units': 'kg*m^-3',
-                'description':
-                'Empiracal erodability of sediment.',
-                'level': CONFIG_LEVEL_ESSENTIAL
-            }})
-
-        self._add_config({
-            'vertical_mixing:tau_crit': {
-                'type': 'float',
-                'default': 0.2,
-                'min': 0,
-                'max': 1,
-                'units': 'Pa',
-                'description':
-                'Critical level of stress to resuspend element.',
-                'level': CONFIG_LEVEL_ESSENTIAL
-            }})
-
-        self._add_config({
-            'vertical_mixing:rho_s': {
-                'type': 'float',
-                'default': 2000,
-                'min': 1550,
-                'max': 2650,
-                'units': 'kgm-3',
-                'description':
-                'Bed sediment particle density.',
-                'level': CONFIG_LEVEL_ESSENTIAL
-            }})
-
-        self._add_config({
-            'vertical_mixing:porosity': {
-                'type': 'float',
-                'default': 0.9,
-                'min': 0,
-                'max': 1,
-                'units': 'unitless',
-                'description':
-                'Porosity of sediment.',
-                'level': CONFIG_LEVEL_ESSENTIAL
-            }})
 
         # By default, sediments do not strand towards coastline
         # TODO: A more sophisticated stranding algorithm is needed
@@ -140,6 +108,7 @@ class SedimentDrift(OceanDrift):
         self._set_config_default('drift:vertical_mixing', True)
         # print(self.required_variables['x_sea_water_velocity'])
         # print(self.environment.x_sea_water_velocity)
+    
 
     def update(self):
         """Update positions and properties of sediment particles.
@@ -159,8 +128,6 @@ class SedimentDrift(OceanDrift):
 
         self.vertical_mixing()  # Including buoyancy and settling
 
-        # self.vertical_buoyancy()
-
         upwards_moving_particles = self.elements.counter == 1
         self.elements.terminal_velocity[upwards_moving_particles] = -0.001
         self.elements.counter[upwards_moving_particles] = 0
@@ -176,38 +143,86 @@ class SedimentDrift(OceanDrift):
         if np.sum(settling) > 0:
             logger.debug('Settling %s elements at seafloor' % np.sum(settling))
             self.elements.moving[settling] = 0
+            self.get_distance_cell_center_above(settling)
 
     def resuspension(self):
         """Resuspending elements if current speed > .5 m/s"""
-        threshold = self.get_config('vertical_mixing:resuspension_threshold')
-        resuspending = np.logical_and(self.current_speed() > threshold, self.elements.moving==0)
+        # threshold = self.get_config('vertical_mixing:resuspension_threshold')
+        # resuspending = np.logical_and(self.current_speed() > threshold, self.elements.moving==0)
 
-        # threshold = self.get_config('vertical_mixing:tau_crit')
-        # bottom_stress = self.calc_bottom_stress
-        # resuspending = np.logical_and(bottom_stress > threshold, self.elements.moving==0)
+        threshold = self.elements.tau_crit
+        bottom_stress = self.calc_bottom_stress()
+        print(np.max(bottom_stress))
+        resuspending = np.logical_and(bottom_stress > threshold, self.elements.moving==0)
         
         if np.sum(resuspending) > 0:
             # Allow moving again
             self.elements.moving[resuspending] = 1
+            self.elements.dz_bot[resuspending] = 99999.0
             # Suspend 1 cm above seafloor
-            self.elements.terminal_velocity[resuspending] = 0.01
-            # self.elements.terminal_velocity[resuspending] = self.calc_upward_resuspension_velocity(bottom_stress)
+            # self.elements.terminal_velocity[resuspending] = 0.01
+            self.elements.terminal_velocity[resuspending] = self.calc_upward_resuspension_velocity(bottom_stress)
             self.elements.counter[resuspending] = 1
 
     def calc_bottom_stress(self):
-        # return bottom_stress
-        # return 0.0021
-        pass
+        reader_names = list(self.env.readers.keys())
+        reader_name = reader_names[0]
+        u = self.env.readers[reader_name].get_variables('x_sea_water_velocity', time=self.time,
+                      x=self.elements.lon, y=self.elements.lat, z=self.elements.z)
+        v = self.env.readers[reader_name].get_variables('y_sea_water_velocity', time=self.time,
+                      x=self.elements.lon, y=self.elements.lat, z=self.elements.z)
+
+        u_vel = []
+        v_vel = []
+
+        for i in range(len(self.elements)):
+            lon, lonidx = self.find_nearest(u['x'], self.elements.lon[i])
+            lat, latidx = self.find_nearest(u['y'], self.elements.lat[i])
+            z, zidx = self.find_nearest(u['z'], self.elements.z[i])
+            u_vel.append(u['x_sea_water_velocity'][zidx, latidx, lonidx])
+            v_vel.append(v['y_sea_water_velocity'][zidx, latidx, lonidx])
+
+        u_vel = np.array(u_vel)
+        v_vel = np.array(v_vel)            
+        
+        A_v = self.get_config('environment:fallback:ocean_vertical_diffusivity')
+        dz_bot = self.elements.dz_bot
+        r_b = 0
+        c_d = 0.0021
+
+        _2KE = u_vel**2 + v_vel**2
+        print(f"shape 2KE: {np.shape(_2KE)}")
+
+        bottom_stress = (2*A_v/dz_bot + r_b + c_d*np.sqrt(_2KE))*u_vel
+        return bottom_stress     
+
+    def find_nearest(self, array, value):
+        idx = (np.abs(array - value)).argmin()
+        return array[idx], idx
+
+
+    def get_distance_cell_center_above(self, particles_seafloor):
+        # This function assumes there is only one reader
+        reader_names = list(self.env.readers.keys())
+        reader_name = reader_names[0]
+        z_grid = self.env.readers[reader_name].z
+        floor_idx = np.array(np.where(particles_seafloor == 1))
+        floor_idx = floor_idx.flatten()
+        for i in floor_idx:
+            z_grid_curr = z_grid[z_grid > self.elements.z[i]]
+            closest_cell_center_height = z_grid_curr.min()
+            self.elements.dz_bot[i] = closest_cell_center_height - self.elements.z[i]
+
 
     def calc_upward_resuspension_velocity(self, bottom_stress):
-        # E_0 = self.get_config('vertical_mixing:E_0')
-        # porosity = self.get_config('vertical_mixing:porosity')
-        # rho_s = self.get_config('vertical_mixing:rho_s')
-        # tau_crit = self.get_config('vertical_mixing:tau_crit')
+        E_0 = self.elements.E_0
+        porosity = self.elements.porosity
+        rho_s = self.elements.rho_s
+        tau_crit = self.elements.tau_crit
         
-        # w = ((E_0 * (1-porosity))/rho_s) * ((bottom_stress - tau_crit)/(bottom_stress))
-        # return w
-        pass
+        w = ((E_0 * (1-porosity))/rho_s) * ((bottom_stress - tau_crit)/(bottom_stress))
+        return w
+
 
 
         
