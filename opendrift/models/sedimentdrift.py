@@ -33,6 +33,9 @@ class SedimentElement(Lagrangian3DArray):
         ('terminal_velocity', {'dtype': np.float32,
                                'units': 'm/s',
                                'default': -0.001}),  # 1 mm/s negative buoyancy
+        ('terminal_velocity_default', {'dtype': np.float32,
+                               'units': 'm/s',
+                               'default': -0.001}),  # 1 mm/s negative buoyancy
         ('grain_diameter', {'dtype': np.float32,
                  'units': 'm',
                  'default': 4e-6}),
@@ -53,8 +56,26 @@ class SedimentElement(Lagrangian3DArray):
                       'default': 2000}),
         ('porosity', {'dtype': np.float32,
                       'units': 'unitless',
-                      'default': 0.9})
+                      'default': 0.9}),
+        ('viscosity_molecular', {'dtype': np.float32,
+                      'units': 'idk rn',
+                      'default': 1.4e-3})
         ])
+
+    def move_elements(self, other, indices):
+        super(Lagrangian3DArray, self).move_elements(other, indices)
+        # Set terminal velocity to something calculated using Stokes Law
+        grain_diameter = other.grain_diameter
+        # This viscosity is in [kg/(ms)] so do not need to multiply by density seawater
+        # viscosity = other.get_config('environment:molecular_viscosity')
+        viscosity = other.viscosity_molecular
+        gravity = -9.81
+        rho_ocean = 1026.95
+        rho_sed = other.rho_s
+        term_vel = 2 / 9 * (rho_sed - rho_ocean) * gravity / viscosity * (grain_diameter / 2)**2 
+        other.terminal_velocity = term_vel
+        other.terminal_velocity_default = term_vel
+      
 
 
 class SedimentDrift(OceanDrift):
@@ -99,6 +120,18 @@ class SedimentDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ESSENTIAL
             }})
 
+        self._add_config({
+            'environment:molecular_viscosity': {
+                'type': 'float',
+                'default': 1.4e-3,
+                'min': 1e-3,
+                'max': 2e-3,
+                'units': 'kg(ms)-1',
+                'description':
+                'Sedimented particles will be resuspended if bottom current shear exceeds this value.',
+                'level': CONFIG_LEVEL_ESSENTIAL
+            }})
+
 
         # By default, sediments do not strand towards coastline
         # TODO: A more sophisticated stranding algorithm is needed
@@ -129,7 +162,7 @@ class SedimentDrift(OceanDrift):
         self.vertical_mixing()  # Including buoyancy and settling
 
         upwards_moving_particles = self.elements.counter == 1
-        self.elements.terminal_velocity[upwards_moving_particles] = -0.001
+        self.elements.terminal_velocity[upwards_moving_particles] = self.elements.terminal_velocity_default[upwards_moving_particles]
         self.elements.counter[upwards_moving_particles] = 0
 
         self.resuspension()        
@@ -145,6 +178,19 @@ class SedimentDrift(OceanDrift):
             self.elements.moving[settling] = 0
             self.get_distance_cell_center_above(settling)
 
+    # def prepare_run(self):
+    #     super(OceanDrift, self).prepare_run()
+    #     # I believe all the super does is define self.depth_profiles
+
+    #     # Set terminal velocity to something calculated using Stokes Law
+    #     grain_diameter = self.elements.grain_diameter
+    #     # This viscosity is in [kg/(ms)] so do not need to multiply by density seawater
+    #     viscosity = self.get_config('environment:molecular_viscosity')
+    #     gravity = 9.81
+    #     rho_ocean = self.sea_water_density()
+    #     rho_sed = self.elements.rho_s
+    #     self.elements.terminal_velocity = 2 / 9 * (rho_sed - rho_ocean) * gravity / viscosity * (grain_diameter / 2)**2 
+
     def resuspension(self):
         """Resuspending elements if current speed > .5 m/s"""
         # threshold = self.get_config('vertical_mixing:resuspension_threshold')
@@ -158,11 +204,9 @@ class SedimentDrift(OceanDrift):
         
         bottom_stress = self.calc_bottom_stress()
         resuspending = np.logical_and(bottom_stress > threshold, self.elements.moving==0)
-        if np.sum(self.elements.moving==0) > 0:
-            print(f"max bottom stress of particles on bottom: {np.max(bottom_stress[self.elements.moving==0])}")
         
         if np.sum(resuspending) > 0:
-            print("There are particles to resuspend")
+            print("RESUSPENSION")
             # Allow moving again
             self.elements.moving[resuspending] = 1
             self.elements.dz_bot[resuspending] = 99999.0
@@ -231,7 +275,52 @@ class SedimentDrift(OceanDrift):
         w = ((E_0 * (1-porosity))/rho_s) * ((bottom_stress - tau_crit)/(bottom_stress))
         return w
 
+    def plot_property(self, prop, filename=None, mean=False):
+        """Basic function to plot time series of any element properties."""
+        import matplotlib.pyplot as plt
+        from matplotlib import dates
+        from datetime import datetime
 
+        super(OceanDrift, self).plot_property(prop, filename, mean)
+
+        hfmt = dates.DateFormatter('%d %b %Y %H:%M')
+        fig = plt.figure()
+        ax = fig.gca()
+        ax.xaxis.set_major_formatter(hfmt)
+        plt.xticks(rotation='vertical')
+        start_time = self.start_time
+        # In case start_time is unsupported cftime
+        start_time = datetime(start_time.year, start_time.month,
+                              start_time.day, start_time.hour,
+                              start_time.minute, start_time.second)
+        times = [
+            start_time + n * self.time_step_output
+            for n in range(self.steps_output)
+        ]
+        data = self.history[prop].T[0:len(times), :]
+        
+        if mean is True:  # Taking average over elements
+            data = np.mean(data, axis=1)
+            plt.plot(times, data)
+        else:
+            for col in range(len(data[0,:])):
+                plt.plot(times, data[:,col], label=f"particle_{col}")
+            plt.legend()
+
+        plt.title(prop)
+        plt.xlabel('Time  [UTC]')
+        
+        try:
+            plt.ylabel('%s  [%s]' %
+                       (prop, self.elements.variables[prop]['units']))
+        except:
+            plt.ylabel(prop)
+        plt.subplots_adjust(bottom=.3)
+        plt.grid()
+        if filename is None:
+            plt.show()
+        else:
+            plt.savefig(filename)
 
         
         
