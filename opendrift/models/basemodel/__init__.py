@@ -107,7 +107,6 @@ def require_mode(mode: Union[Mode, List[Mode]], post_next_mode=False, error=None
 
                 else:
                     raise WrongMode(mode, self.mode, error)
-
             r = func(self, *args, **kwargs)
 
             if post_next_mode:
@@ -1048,6 +1047,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         lon = np.atleast_1d(lon).ravel()
         lat = np.atleast_1d(lat).ravel()
+        
         radius = np.atleast_1d(radius).ravel()
         time = np.atleast_1d(time)
 
@@ -1776,7 +1776,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
 
         # Exporting software and hardware specification, for possible debugging
         logger.debug(opendrift.versions())
-
+        
         self.timer_end('configuration')
         self.timer_start('preparing main loop')
 
@@ -3665,6 +3665,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                         map_y,
                                         scalar,
                                         colors='gray',
+                                        linestyles='--',
                                         transform=gcrs)
                     else:
                         # contourlines is an array of values
@@ -3673,6 +3674,7 @@ class OpenDriftSimulation(PhysicsMethods, Timeable, Configurable):
                                         scalar,
                                         contourlines,
                                         colors='gray',
+                                        linestyles='--',
                                         transform=gcrs)
                     plt.clabel(CS, fmt='%g')
 

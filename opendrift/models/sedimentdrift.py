@@ -1,4 +1,4 @@
-# This file is part of OpenDrift.
+  # This file is part of OpenDrift.
 #
 # OpenDrift is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -59,7 +59,13 @@ class SedimentElement(Lagrangian3DArray):
                       'default': 0.9}),
         ('viscosity_molecular', {'dtype': np.float32,
                       'units': 'idk rn',
-                      'default': 1.4e-3})
+                      'default': 1.4e-3}),
+        ('use_stokes', {'dtype': np.uint8,
+                      'units': '1',
+                      'default': 1}),
+        ('times_resuspended', {'dtype': np.uint8,
+                      'units': '1',
+                      'default': 0})
         ])
 
     def move_elements(self, other, indices):
@@ -72,8 +78,14 @@ class SedimentElement(Lagrangian3DArray):
         gravity = -9.81
         rho_ocean = 1026.95
         rho_sed = other.rho_s
+        print(f"input term vel: {other.terminal_velocity}")
+        print(f"len input term vel: {len(other.terminal_velocity)}")
         term_vel = 2 / 9 * (rho_sed - rho_ocean) * gravity / viscosity * (grain_diameter / 2)**2 
+        print(f"calculated: {term_vel}")
+        not_stokes = 1- other.use_stokes
+        term_vel = term_vel * other.use_stokes + other.terminal_velocity * not_stokes
         other.terminal_velocity = term_vel
+        print(f"check terminal vel: {other.terminal_velocity}")
         other.terminal_velocity_default = term_vel
       
 
@@ -146,7 +158,6 @@ class SedimentDrift(OceanDrift):
     def update(self):
         """Update positions and properties of sediment particles.
         """
-
         # Advecting here all elements, but want to soon add
         # possibility of not moving settled elements, until
         # they are resuspended. May then need to send a boolean
@@ -160,6 +171,16 @@ class SedimentDrift(OceanDrift):
         self.stokes_drift()
 
         self.vertical_mixing()  # Including buoyancy and settling
+
+        # deactivated elements outside of bounds
+        lon_min = -118.7264
+        lon_max = -118.144003
+        lat_min = 33.2672
+        lat_max = 33.9328
+        
+        lons, lats = self.elements.lon, self.elements.lat
+        out_of_bounds = (lons < lon_min) | (lons > lon_max) | (lats < lat_min) | (lats > lat_max)
+        self.deactivate_elements(out_of_bounds, reason='out of bounds')
 
         upwards_moving_particles = self.elements.counter == 1
         self.elements.terminal_velocity[upwards_moving_particles] = self.elements.terminal_velocity_default[upwards_moving_particles]
@@ -178,19 +199,6 @@ class SedimentDrift(OceanDrift):
             self.elements.moving[settling] = 0
             self.get_distance_cell_center_above(settling)
 
-    # def prepare_run(self):
-    #     super(OceanDrift, self).prepare_run()
-    #     # I believe all the super does is define self.depth_profiles
-
-    #     # Set terminal velocity to something calculated using Stokes Law
-    #     grain_diameter = self.elements.grain_diameter
-    #     # This viscosity is in [kg/(ms)] so do not need to multiply by density seawater
-    #     viscosity = self.get_config('environment:molecular_viscosity')
-    #     gravity = 9.81
-    #     rho_ocean = self.sea_water_density()
-    #     rho_sed = self.elements.rho_s
-    #     self.elements.terminal_velocity = 2 / 9 * (rho_sed - rho_ocean) * gravity / viscosity * (grain_diameter / 2)**2 
-
     def resuspension(self):
         """Resuspending elements if current speed > .5 m/s"""
         # threshold = self.get_config('vertical_mixing:resuspension_threshold')
@@ -206,13 +214,12 @@ class SedimentDrift(OceanDrift):
         resuspending = np.logical_and(bottom_stress > threshold, self.elements.moving==0)
         
         if np.sum(resuspending) > 0:
-            print("RESUSPENSION")
+            self.elements.times_resuspended[resuspending] = self.elements.times_resuspended[resuspending] + 1
             # Allow moving again
             self.elements.moving[resuspending] = 1
             self.elements.dz_bot[resuspending] = 99999.0
-            # Suspend 1 cm above seafloor
-            # self.elements.terminal_velocity[resuspending] = 0.01
-            self.elements.terminal_velocity[resuspending] = self.calc_upward_resuspension_velocity(bottom_stress[resuspending])
+
+            self.elements.terminal_velocity[resuspending] = self.calc_upward_resuspension_velocity(bottom_stress, resuspending)
             self.elements.counter[resuspending] = 1
 
     def calc_bottom_stress(self):
@@ -243,8 +250,10 @@ class SedimentDrift(OceanDrift):
 
         _2KE = u_vel**2 + v_vel**2
 
-        bottom_stress_pseudo_energy = (2*A_v/dz_bot + r_b + c_d*np.sqrt(_2KE))*u_vel
-        bottom_stress = self.sea_water_density()*bottom_stress_pseudo_energy
+        bottom_stress_pseudo_energy_x = (2*A_v/dz_bot + r_b + c_d*np.sqrt(_2KE))*u_vel
+        bottom_stress_pseudo_energy_y = (2*A_v/dz_bot + r_b + c_d*np.sqrt(_2KE))*v_vel
+        bottom_stress_pseudo_energy_magnitude = np.sqrt(bottom_stress_pseudo_energy_x**2 + bottom_stress_pseudo_energy_y**2)
+        bottom_stress = self.sea_water_density()*bottom_stress_pseudo_energy_magnitude
         
         return bottom_stress     
 
@@ -266,22 +275,20 @@ class SedimentDrift(OceanDrift):
             self.elements.dz_bot[i] = closest_cell_center_height - self.elements.z[i]
 
 
-    def calc_upward_resuspension_velocity(self, bottom_stress):
-        E_0 = self.elements.E_0
-        porosity = self.elements.porosity
-        rho_s = self.elements.rho_s
-        tau_crit = self.elements.tau_crit
+    def calc_upward_resuspension_velocity(self, bottom_stress, resuspending):
+        E_0 = self.elements.E_0[resuspending]
+        porosity = self.elements.porosity[resuspending]
+        rho_s = self.elements.rho_s[resuspending]
+        tau_crit = self.elements.tau_crit[resuspending]
+        bot_stress = bottom_stress[resuspending]
         
-        w = ((E_0 * (1-porosity))/rho_s) * ((bottom_stress - tau_crit)/(bottom_stress))
+        w = ((E_0 * (1-porosity))/rho_s) * ((bot_stress - tau_crit)/(bot_stress))
         return w
 
-    def plot_property(self, prop, filename=None, mean=False):
+    def plot_property_nolegend(self, prop, filename=None, mean=False, labels=None, colors=None):
         """Basic function to plot time series of any element properties."""
         import matplotlib.pyplot as plt
         from matplotlib import dates
-        from datetime import datetime
-
-        super(OceanDrift, self).plot_property(prop, filename, mean)
 
         hfmt = dates.DateFormatter('%d %b %Y %H:%M')
         fig = plt.figure()
@@ -297,6 +304,48 @@ class SedimentDrift(OceanDrift):
             start_time + n * self.time_step_output
             for n in range(self.steps_output)
         ]
+        days = [dt.date() for dt in times]
+        times = days
+        data = self.history[prop].T[0:len(times), :]
+        if mean is True:  # Taking average over elements
+            data = np.mean(data, axis=1)
+        plt.plot(times, data)
+        plt.title(prop)
+        plt.xlabel('Time  [UTC]')
+        try:
+            plt.ylabel('%s  [%s]' %
+                       (prop, self.elements.variables[prop]['units']))
+        except:
+            plt.ylabel(prop)
+        plt.subplots_adjust(bottom=.3)
+        plt.grid()
+        if filename is None:
+            plt.show()
+        else:
+            plt.savefig(filename)
+
+    def plot_property_11(self, prop, filename=None, mean=False, labels=None, colors=None):
+        """Basic function to plot time series of any element properties."""
+        import matplotlib.pyplot as plt
+        from matplotlib import dates
+        from datetime import datetime
+
+        hfmt = dates.DateFormatter('%d %b %Y')
+        fig = plt.figure()
+        ax = fig.gca()
+        ax.xaxis.set_major_formatter(hfmt)
+        plt.xticks(rotation='vertical')
+        start_time = self.start_time
+        # In case start_time is unsupported cftime
+        start_time = datetime(start_time.year, start_time.month,
+                              start_time.day, start_time.hour,
+                              start_time.minute, start_time.second)
+        times = [
+            start_time + n * self.time_step_output
+            for n in range(self.steps_output)
+        ]
+        days = [dt.date() for dt in times]
+        times = days
         data = self.history[prop].T[0:len(times), :]
         
         if mean is True:  # Taking average over elements
@@ -304,7 +353,16 @@ class SedimentDrift(OceanDrift):
             plt.plot(times, data)
         else:
             for col in range(len(data[0,:])):
-                plt.plot(times, data[:,col], label=f"particle_{col}")
+                if colors is not None and labels is not None:
+                    group = col // 11  # Determine the group (0, 1, 2, or 3)
+                    color = colors[group]
+                    if col % 11 == 0:  # Only label the first line in each group for the legend
+                        plt.plot(days, data[:, col], color=color, label=labels[group])
+                    else:
+                        plt.plot(days, data[:, col], color=color)
+                else:                
+                    plt.plot(times, data[:,col], label=f"particle_{col}")
+                    
             plt.legend()
 
         plt.title(prop)
@@ -322,6 +380,64 @@ class SedimentDrift(OceanDrift):
         else:
             plt.savefig(filename)
 
+    def plot_property_4(self, prop, filename=None, mean=False, labels=None, colors=None):
+        """Basic function to plot time series of any element properties."""
+        import matplotlib.pyplot as plt
+        from matplotlib import dates
+        from datetime import datetime
+        import numpy as np  # Import numpy for np.mean
+    
+        super(OceanDrift, self).plot_property(prop, filename, mean)
+    
+        hfmt = dates.DateFormatter('%d %b %Y')
+        fig = plt.figure()
+        ax = fig.gca()
+        ax.xaxis.set_major_formatter(hfmt)
+        plt.xticks(rotation='vertical')
         
+        start_time = self.start_time
+        # In case start_time is unsupported cftime
+        start_time = datetime(
+            start_time.year, start_time.month,
+            start_time.day, start_time.hour,
+            start_time.minute, start_time.second
+        )
         
+        times = [
+            start_time + n * self.time_step_output
+            for n in range(self.steps_output)
+        ]
+        days = [dt.date() for dt in times]
+        times = days
+        data = self.history[prop].T[0:len(times), :]
+        
+        if mean:
+            # Taking average over elements
+            data = np.mean(data, axis=1)
+            plt.plot(times, data)
+        else:
+            for col in range(len(data[0, :])):
+                if colors is not None and labels is not None:
+                    group = col
+                    color = colors[group]
+                    plt.plot(times, data[:, col], color=color, label=labels[group])
+                else:
+                    plt.plot(times, data[:, col], label=f"particle_{col}")
             
+            plt.legend()
+    
+        plt.title(prop)
+        plt.xlabel('Time  [UTC]')
+        
+        try:
+            plt.ylabel('%s  [%s]' % (prop, self.elements.variables[prop]['units']))
+        except:
+            plt.ylabel(prop)
+        
+        plt.subplots_adjust(bottom=.3)
+        plt.grid()
+        
+        if filename is None:
+            plt.show()
+        else:
+            plt.savefig(filename)
