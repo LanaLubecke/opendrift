@@ -24,6 +24,8 @@ import logging; logger = logging.getLogger(__name__)
 from opendrift.models.oceandrift import OceanDrift
 from opendrift.models.oceandrift import Lagrangian3DArray
 from opendrift.config import CONFIG_LEVEL_ESSENTIAL, CONFIG_LEVEL_BASIC, CONFIG_LEVEL_ADVANCED
+from datetime import datetime
+import math
 
 class SedimentElement(Lagrangian3DArray):
     variables = Lagrangian3DArray.add_variables([
@@ -33,15 +35,20 @@ class SedimentElement(Lagrangian3DArray):
         ('terminal_velocity', {'dtype': np.float32,
                                'units': 'm/s',
                                'default': -0.001}),  # 1 mm/s negative buoyancy
+        # use the terminal_velocity_default to restore downwards terminal velocity after
+        # particle has been given an upwards one for resuspension
         ('terminal_velocity_default', {'dtype': np.float32,
                                'units': 'm/s',
-                               'default': -0.001}),  # 1 mm/s negative buoyancy
+                               'default': -0.001}),  
         ('grain_diameter', {'dtype': np.float32,
                  'units': 'm',
                  'default': 4e-6}),
+        # used to give particle upward resuspension velocity for 1 timestep
         ('counter', {'dtype': np.uint8,
                       'units': '1',
                       'default': 0}),
+        # Distance from particle to nearest cell center above, value set to 99999
+        # if particle not settled
         ('dz_bot', {'dtype': np.float32,
                       'units': 'm',
                       'default': 99999.0}), 
@@ -57,12 +64,19 @@ class SedimentElement(Lagrangian3DArray):
         ('porosity', {'dtype': np.float32,
                       'units': 'unitless',
                       'default': 0.9}),
+        # Molecular viscosity used for Stokes Law terminal velocity calculation.
+        # Since this is a property of seawater, it would make sense for this
+        # parameter to be stored in the model config. However, by putting it
+        # in this location, the move_elements function has access to it, and
+        # the move_elements function is where terminal velocity is calculated.
         ('viscosity_molecular', {'dtype': np.float32,
-                      'units': 'idk rn',
+                      'units': 'kgm-1s-1',
                       'default': 1.4e-3}),
+        # whether or not to use Stokes Law calculation or empirical value for terminal velocity
         ('use_stokes', {'dtype': np.uint8,
                       'units': '1',
                       'default': 1}),
+        # keeps track of how many times a particle was resuspended
         ('times_resuspended', {'dtype': np.uint8,
                       'units': '1',
                       'default': 0})
@@ -73,19 +87,16 @@ class SedimentElement(Lagrangian3DArray):
         # Set terminal velocity to something calculated using Stokes Law
         grain_diameter = other.grain_diameter
         # This viscosity is in [kg/(ms)] so do not need to multiply by density seawater
-        # viscosity = other.get_config('environment:molecular_viscosity')
         viscosity = other.viscosity_molecular
         gravity = -9.81
+        # Since this method is a part of the Lagrangian3DArray class, it does not have access
+        # to the sea_water_density function from physics methods, thus I just chose a default value.
         rho_ocean = 1026.95
         rho_sed = other.rho_s
-        print(f"input term vel: {other.terminal_velocity}")
-        print(f"len input term vel: {len(other.terminal_velocity)}")
         term_vel = 2 / 9 * (rho_sed - rho_ocean) * gravity / viscosity * (grain_diameter / 2)**2 
-        print(f"calculated: {term_vel}")
-        not_stokes = 1- other.use_stokes
+        not_stokes = 1 - other.use_stokes
         term_vel = term_vel * other.use_stokes + other.terminal_velocity * not_stokes
         other.terminal_velocity = term_vel
-        print(f"check terminal vel: {other.terminal_velocity}")
         other.terminal_velocity_default = term_vel
       
 
@@ -132,6 +143,10 @@ class SedimentDrift(OceanDrift):
                 'level': CONFIG_LEVEL_ESSENTIAL
             }})
 
+        # Currently this config value is not being used as it is also saved in the
+        # SedimentELement object. However, if the calculation for terminal velocity
+        # were to be moved out of the SedimentElement class, it would be useful to
+        # store molecular viscosity here.
         self._add_config({
             'environment:molecular_viscosity': {
                 'type': 'float',
@@ -172,21 +187,28 @@ class SedimentDrift(OceanDrift):
 
         self.vertical_mixing()  # Including buoyancy and settling
 
-        # deactivated elements outside of bounds
-        lon_min = -118.7264
-        lon_max = -118.144003
-        lat_min = 33.2672
-        lat_max = 33.9328
-        
-        lons, lats = self.elements.lon, self.elements.lat
-        out_of_bounds = (lons < lon_min) | (lons > lon_max) | (lats < lat_min) | (lats > lat_max)
-        self.deactivate_elements(out_of_bounds, reason='out of bounds')
+        self.deactivate_elements_outofbounds()       
 
         upwards_moving_particles = self.elements.counter == 1
+        # Restore downwards velocity to resuspended particles
         self.elements.terminal_velocity[upwards_moving_particles] = self.elements.terminal_velocity_default[upwards_moving_particles]
         self.elements.counter[upwards_moving_particles] = 0
 
-        self.resuspension()        
+        self.resuspension()
+
+    def deactivate_elements_outofbounds(self):
+        # This only works if the first reader you passed to the model
+        # has the correct geographic bounds
+        reader_names = list(self.env.readers.keys())
+        reader_name = reader_names[0]
+        lon_min = self.env.readers[reader_name].xmin
+        lon_max = self.env.readers[reader_name].xmax
+        lat_min = self.env.readers[reader_name].ymin
+        lat_max = self.env.readers[reader_name].ymax
+        
+        lons, lats = self.elements.lon, self.elements.lat
+        out_of_bounds = (lons <= lon_min) | (lons >= lon_max) | (lats <= lat_min) | (lats >= lat_max)
+        self.deactivate_elements(out_of_bounds, reason='out of bounds')
 
     def bottom_interaction(self, seafloor_depth):
         """Sub method of vertical_mixing, determines settling"""
@@ -201,6 +223,7 @@ class SedimentDrift(OceanDrift):
 
     def resuspension(self):
         """Resuspending elements if current speed > .5 m/s"""
+        ## Old resuspension condition
         # threshold = self.get_config('vertical_mixing:resuspension_threshold')
         # resuspending = np.logical_and(self.current_speed() > threshold, self.elements.moving==0)
 
@@ -214,15 +237,20 @@ class SedimentDrift(OceanDrift):
         resuspending = np.logical_and(bottom_stress > threshold, self.elements.moving==0)
         
         if np.sum(resuspending) > 0:
+            # Keep track of how many times particle has been resuspended
             self.elements.times_resuspended[resuspending] = self.elements.times_resuspended[resuspending] + 1
             # Allow moving again
             self.elements.moving[resuspending] = 1
+            # Since not at bottom anymore, set distance to nearest cell center above to 99999
             self.elements.dz_bot[resuspending] = 99999.0
-
+            # Give particle upwards velocity
             self.elements.terminal_velocity[resuspending] = self.calc_upward_resuspension_velocity(bottom_stress, resuspending)
+            # Keep track of number of time steps particle has been in resuspension for
             self.elements.counter[resuspending] = 1
 
     def calc_bottom_stress(self):
+        # gets horizontal velocity field at z position closest to particle
+        # Equation for drag adapted from https://mitgcm.readthedocs.io/en/latest/algorithm/algorithm.html, equation 2.119
         reader_names = list(self.env.readers.keys())
         reader_name = reader_names[0]
         u = self.env.readers[reader_name].get_variables('x_sea_water_velocity', time=self.time,
@@ -261,7 +289,6 @@ class SedimentDrift(OceanDrift):
         idx = (np.abs(array - value)).argmin()
         return array[idx], idx
 
-
     def get_distance_cell_center_above(self, particles_seafloor):
         # This function assumes there is only one reader
         reader_names = list(self.env.readers.keys())
@@ -276,6 +303,8 @@ class SedimentDrift(OceanDrift):
 
 
     def calc_upward_resuspension_velocity(self, bottom_stress, resuspending):
+        # Calculate the upwards velocity to give particle getting resuspended.
+        # Equation adapted from https://doi.org/10.1061/JYCEAJ.0004937
         E_0 = self.elements.E_0[resuspending]
         porosity = self.elements.porosity[resuspending]
         rho_s = self.elements.rho_s[resuspending]
@@ -285,52 +314,19 @@ class SedimentDrift(OceanDrift):
         w = ((E_0 * (1-porosity))/rho_s) * ((bot_stress - tau_crit)/(bot_stress))
         return w
 
-    def plot_property_nolegend(self, prop, filename=None, mean=False, labels=None, colors=None):
+    def plot_property_sedimentdrift(self, prop, filename=None, mean=False, labels=None, days=False, num_per_group=None, legend=True):
         """Basic function to plot time series of any element properties."""
+        # This function adds onto the plot_property function that the basemodel already provides.
+        # If you set days to true, the x axis labels wont include hours and seconds
+        # Legend defaults to true. If you have more than one particle per label group.
+        # you need to specify num_per_group and labels.
         import matplotlib.pyplot as plt
         from matplotlib import dates
 
-        hfmt = dates.DateFormatter('%d %b %Y %H:%M')
-        fig = plt.figure()
-        ax = fig.gca()
-        ax.xaxis.set_major_formatter(hfmt)
-        plt.xticks(rotation='vertical')
-        start_time = self.start_time
-        # In case start_time is unsupported cftime
-        start_time = datetime(start_time.year, start_time.month,
-                              start_time.day, start_time.hour,
-                              start_time.minute, start_time.second)
-        times = [
-            start_time + n * self.time_step_output
-            for n in range(self.steps_output)
-        ]
-        days = [dt.date() for dt in times]
-        times = days
-        data = self.history[prop].T[0:len(times), :]
-        if mean is True:  # Taking average over elements
-            data = np.mean(data, axis=1)
-        plt.plot(times, data)
-        plt.title(prop)
-        plt.xlabel('Time  [UTC]')
-        try:
-            plt.ylabel('%s  [%s]' %
-                       (prop, self.elements.variables[prop]['units']))
-        except:
-            plt.ylabel(prop)
-        plt.subplots_adjust(bottom=.3)
-        plt.grid()
-        if filename is None:
-            plt.show()
+        if not days:
+            hfmt = dates.DateFormatter('%d %b %Y %H:%M')
         else:
-            plt.savefig(filename)
-
-    def plot_property_11(self, prop, filename=None, mean=False, labels=None, colors=None):
-        """Basic function to plot time series of any element properties."""
-        import matplotlib.pyplot as plt
-        from matplotlib import dates
-        from datetime import datetime
-
-        hfmt = dates.DateFormatter('%d %b %Y')
+            hfmt = dates.DateFormatter('%d %b %Y')
         fig = plt.figure()
         ax = fig.gca()
         ax.xaxis.set_major_formatter(hfmt)
@@ -344,30 +340,28 @@ class SedimentDrift(OceanDrift):
             start_time + n * self.time_step_output
             for n in range(self.steps_output)
         ]
-        days = [dt.date() for dt in times]
-        times = days
         data = self.history[prop].T[0:len(times), :]
-        
         if mean is True:  # Taking average over elements
             data = np.mean(data, axis=1)
             plt.plot(times, data)
         else:
+            if num_per_group is not None:
+                colors = plt.cm.viridis(np.linspace(0, 1, int(math.ceil(len(data[0,:]))/num_per_group)))
             for col in range(len(data[0,:])):
-                if colors is not None and labels is not None:
-                    group = col // 11  # Determine the group (0, 1, 2, or 3)
+                if labels is not None:
+                    group = col // num_per_group  # Determine the group (0, 1, 2, or 3)
                     color = colors[group]
-                    if col % 11 == 0:  # Only label the first line in each group for the legend
-                        plt.plot(days, data[:, col], color=color, label=labels[group])
+                    if col % num_per_group == 0:  # Only label the first line in each group for the legend
+                        plt.plot(times, data[:, col], color=color, label=labels[group])
                     else:
-                        plt.plot(days, data[:, col], color=color)
+                        plt.plot(times, data[:, col], color=color)
                 else:                
                     plt.plot(times, data[:,col], label=f"particle_{col}")
-                    
-            plt.legend()
 
+            if legend:
+                plt.legend()
         plt.title(prop)
         plt.xlabel('Time  [UTC]')
-        
         try:
             plt.ylabel('%s  [%s]' %
                        (prop, self.elements.variables[prop]['units']))
@@ -380,64 +374,3 @@ class SedimentDrift(OceanDrift):
         else:
             plt.savefig(filename)
 
-    def plot_property_4(self, prop, filename=None, mean=False, labels=None, colors=None):
-        """Basic function to plot time series of any element properties."""
-        import matplotlib.pyplot as plt
-        from matplotlib import dates
-        from datetime import datetime
-        import numpy as np  # Import numpy for np.mean
-    
-        super(OceanDrift, self).plot_property(prop, filename, mean)
-    
-        hfmt = dates.DateFormatter('%d %b %Y')
-        fig = plt.figure()
-        ax = fig.gca()
-        ax.xaxis.set_major_formatter(hfmt)
-        plt.xticks(rotation='vertical')
-        
-        start_time = self.start_time
-        # In case start_time is unsupported cftime
-        start_time = datetime(
-            start_time.year, start_time.month,
-            start_time.day, start_time.hour,
-            start_time.minute, start_time.second
-        )
-        
-        times = [
-            start_time + n * self.time_step_output
-            for n in range(self.steps_output)
-        ]
-        days = [dt.date() for dt in times]
-        times = days
-        data = self.history[prop].T[0:len(times), :]
-        
-        if mean:
-            # Taking average over elements
-            data = np.mean(data, axis=1)
-            plt.plot(times, data)
-        else:
-            for col in range(len(data[0, :])):
-                if colors is not None and labels is not None:
-                    group = col
-                    color = colors[group]
-                    plt.plot(times, data[:, col], color=color, label=labels[group])
-                else:
-                    plt.plot(times, data[:, col], label=f"particle_{col}")
-            
-            plt.legend()
-    
-        plt.title(prop)
-        plt.xlabel('Time  [UTC]')
-        
-        try:
-            plt.ylabel('%s  [%s]' % (prop, self.elements.variables[prop]['units']))
-        except:
-            plt.ylabel(prop)
-        
-        plt.subplots_adjust(bottom=.3)
-        plt.grid()
-        
-        if filename is None:
-            plt.show()
-        else:
-            plt.savefig(filename)
