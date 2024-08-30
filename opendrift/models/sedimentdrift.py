@@ -228,13 +228,10 @@ class SedimentDrift(OceanDrift):
         # resuspending = np.logical_and(self.current_speed() > threshold, self.elements.moving==0)
 
         threshold = self.elements.tau_crit
-        # Technically this calculation of bottom stress should only be done on particles near
-        # the seafloor. So this calculation is not valid for the particles that have not settled.
-        # I am leaving it this way though because it works better for finding the resuspending
-        # index.
-        
-        bottom_stress = self.calc_bottom_stress()
-        resuspending = np.logical_and(bottom_stress > threshold, self.elements.moving==0)
+
+        settled = self.elements.moving==0
+        bottom_stress = self.calc_bottom_stress(settled)
+        resuspending = np.logical_and(bottom_stress > threshold, settled)
         
         if np.sum(resuspending) > 0:
             # Keep track of how many times particle has been resuspended
@@ -248,7 +245,7 @@ class SedimentDrift(OceanDrift):
             # Keep track of number of time steps particle has been in resuspension for
             self.elements.counter[resuspending] = 1
 
-    def calc_bottom_stress(self):
+    def calc_bottom_stress(self, idxs):
         # gets horizontal velocity field at z position closest to particle
         # Equation for drag adapted from https://mitgcm.readthedocs.io/en/latest/algorithm/algorithm.html, equation 2.119
         reader_names = list(self.env.readers.keys())
@@ -260,13 +257,17 @@ class SedimentDrift(OceanDrift):
 
         u_vel = []
         v_vel = []
-
-        for i in range(len(self.elements)):
-            lon, lonidx = self.find_nearest(u['x'], self.elements.lon[i])
-            lat, latidx = self.find_nearest(u['y'], self.elements.lat[i])
-            z, zidx = self.find_nearest(u['z'], self.elements.z[i])
-            u_vel.append(u['x_sea_water_velocity'][zidx, latidx, lonidx])
-            v_vel.append(v['y_sea_water_velocity'][zidx, latidx, lonidx])
+        
+        for i, idx in enumerate(idxs):
+            if i:
+                lon, lonidx = self.find_nearest(u['x'], self.elements.lon[i])
+                lat, latidx = self.find_nearest(u['y'], self.elements.lat[i])
+                z, zidx = self.find_nearest(u['z'], self.elements.z[i])
+                u_vel.append(u['x_sea_water_velocity'][zidx, latidx, lonidx])
+                v_vel.append(v['y_sea_water_velocity'][zidx, latidx, lonidx])
+            else:
+                u_vel.append(0.0)
+                v_vel.append(0.0)
 
         u_vel = np.array(u_vel)
         v_vel = np.array(v_vel)            
@@ -278,9 +279,7 @@ class SedimentDrift(OceanDrift):
 
         _2KE = u_vel**2 + v_vel**2
 
-        bottom_stress_pseudo_energy_x = (2*A_v/dz_bot + r_b + c_d*np.sqrt(_2KE))*u_vel
-        bottom_stress_pseudo_energy_y = (2*A_v/dz_bot + r_b + c_d*np.sqrt(_2KE))*v_vel
-        bottom_stress_pseudo_energy_magnitude = np.sqrt(bottom_stress_pseudo_energy_x**2 + bottom_stress_pseudo_energy_y**2)
+        bottom_stress_pseudo_energy_magnitude = (2*A_v/dz_bot + r_b + c_d*np.sqrt(_2KE))*np.sqrt(u_vel**2 + v_vel**2)
         bottom_stress = self.sea_water_density()*bottom_stress_pseudo_energy_magnitude
         
         return bottom_stress     
