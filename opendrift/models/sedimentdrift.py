@@ -185,7 +185,11 @@ class SedimentDrift(OceanDrift):
 
         self.stokes_drift()
 
-        self.vertical_mixing()  # Including buoyancy and settling
+        if self.get_config('drift:vertical_mixing') is False:
+            self.vertical_buoyancy()
+        else:
+            self.vertical_mixing() # including buoyancy and settling
+
 
         self.deactivate_elements_outofbounds()       
 
