@@ -207,7 +207,7 @@ class SedimentDrift(OceanDrift):
         lat_max = self.env.readers[reader_name].ymax
         
         lons, lats = self.elements.lon, self.elements.lat
-        out_of_bounds = (lons <= lon_min) | (lons >= lon_max) | (lats <= lat_min) | (lats >= lat_max)
+        out_of_bounds = (lons < lon_min) | (lons > lon_max) | (lats < lat_min) | (lats > lat_max)
         self.deactivate_elements(out_of_bounds, reason='out of bounds')
 
     def bottom_interaction(self, seafloor_depth):
@@ -230,8 +230,12 @@ class SedimentDrift(OceanDrift):
         threshold = self.elements.tau_crit
 
         settled = self.elements.moving==0
-        bottom_stress = self.calc_bottom_stress(settled)
-        resuspending = np.logical_and(bottom_stress > threshold, settled)
+        if np.sum(settled) > 0:
+            print(f"num particles settled: {np.sum(settled)}")
+            bottom_stress = self.calc_bottom_stress(settled)
+            resuspending = np.logical_and(bottom_stress > threshold, settled)
+        else:
+            resuspending = settled
         
         if np.sum(resuspending) > 0:
             # Keep track of how many times particle has been resuspended
@@ -251,15 +255,15 @@ class SedimentDrift(OceanDrift):
         reader_names = list(self.env.readers.keys())
         reader_name = reader_names[0]
         u = self.env.readers[reader_name].get_variables('x_sea_water_velocity', time=self.time,
-                      x=self.elements.lon, y=self.elements.lat, z=self.elements.z)
+                      x=self.elements.lon[idxs], y=self.elements.lat[idxs], z=self.elements.z[idxs])
         v = self.env.readers[reader_name].get_variables('y_sea_water_velocity', time=self.time,
-                      x=self.elements.lon, y=self.elements.lat, z=self.elements.z)
+                      x=self.elements.lon[idxs], y=self.elements.lat[idxs], z=self.elements.z[idxs])
 
         u_vel = []
         v_vel = []
         
         for i, idx in enumerate(idxs):
-            if i:
+            if idx:
                 lon, lonidx = self.find_nearest(u['x'], self.elements.lon[i])
                 lat, latidx = self.find_nearest(u['y'], self.elements.lat[i])
                 z, zidx = self.find_nearest(u['z'], self.elements.z[i])
