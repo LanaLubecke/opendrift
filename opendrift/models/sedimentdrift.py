@@ -165,10 +165,7 @@ class SedimentDrift(OceanDrift):
         self._set_config_default('general:coastline_action', 'previous')
 
         # Vertical mixing is enabled as default
-        self._set_config_default('drift:vertical_mixing', True)
-        # print(self.required_variables['x_sea_water_velocity'])
-        # print(self.environment.x_sea_water_velocity)
-    
+        self._set_config_default('drift:vertical_mixing', True)    
 
     def update(self):
         """Update positions and properties of sediment particles.
@@ -187,6 +184,7 @@ class SedimentDrift(OceanDrift):
 
         if self.get_config('drift:vertical_mixing') is False:
             self.vertical_buoyancy()
+            # self.vertical_advection()
         else:
             self.vertical_mixing() # including buoyancy and settling
 
@@ -235,7 +233,6 @@ class SedimentDrift(OceanDrift):
 
         settled = self.elements.moving==0
         if np.sum(settled) > 0:
-            print(f"num particles settled: {np.sum(settled)}")
             bottom_stress = self.calc_bottom_stress(settled)
             resuspending = np.logical_and(bottom_stress > threshold, settled)
         else:

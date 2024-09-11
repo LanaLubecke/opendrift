@@ -411,11 +411,11 @@ class OceanDrift(OpenDriftSimulation):
 
     def vertical_buoyancy(self):
         """Move particles vertically according to their buoyancy"""
-        in_ocean = np.where(self.elements.z<0)[0]
+        in_ocean = np.where(self.elements.z<=0)[0]
         if len(in_ocean) > 0:
             self.elements.z[in_ocean] = np.minimum(0,
                 self.elements.z[in_ocean] + self.elements.terminal_velocity[in_ocean] * self.time_step.total_seconds())
-
+            
         # check for minimum height/maximum depth for each particle accouting also for
         # the sea surface height
         Zmin = -1.*(self.environment.sea_floor_depth_below_sea_level + self.environment.sea_surface_height)
