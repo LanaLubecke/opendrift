@@ -211,6 +211,7 @@ class SedimentDrift(OceanDrift):
         lons, lats = self.elements.lon, self.elements.lat
         out_of_bounds = (lons < lon_min) | (lons > lon_max) | (lats < lat_min) | (lats > lat_max)
         self.deactivate_elements(out_of_bounds, reason='out of bounds')
+        self.remove_deactivated_elements()
 
     def bottom_interaction(self, seafloor_depth):
         """Sub method of vertical_mixing, determines settling"""
